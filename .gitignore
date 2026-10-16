@@ -1,0 +1,9 @@
+# local secrets / per-install config — never commit
+config.h
+
+# build artifacts
+.pio/
+build/
+*.bin
+*.elf
+.DS_Store
