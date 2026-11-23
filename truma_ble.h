@@ -174,7 +174,7 @@ struct State {
   int water_boost_time = -1;        // WaterHeating.FasterHeatingModeTime: seconds left
   int pwr_mode = -1;                // panel PowerMgmt.PwrMode: 0 off, 1 standby, 3 on, 4/5 going off/standby
   int brightness = -1;              // Panel.Intst: %
-  int dark_brightness = -1;         // Panel.DarkIntst: % while idle / in standby
+  int dark_brightness = -1;         // Panel.DarkIntst: 1-10 while dimmed (the panel ignores other values)
   int display_timeout = -1;         // Panel.DisplayTimeout: s
   int screensaver = -1;             // Panel.Screensaver: 1 = display dimmed right now (state, not a setting)
   int32_t panel_idle_s = -1;        // Panel.UserInactiveSince: s since the last real use (taps on the lock screen don't count)

@@ -148,7 +148,7 @@ With `ENABLE_TRUMA = 1` (see below):
   | `timer` | 0/1, plus `&n=1..6` | `TimerConfig.Timer<n>State` |
   | `pwr_mode` | 1 standby, 3 on | `PowerMgmt.PwrMode` (panel) |
   | `brightness` | 10–100 % | `Panel.Intst` |
-  | `dark_brightness` | 0–100 % | `Panel.DarkIntst` |
+  | `dark_brightness` | 1–10 (the panel ignores other values) | `Panel.DarkIntst` |
   | `display_timeout` | 10–600 s | `Panel.DisplayTimeout` |
   | `restore` | 0/1 | restore after a panel reset (stored on the ESP) |
   | `error_reset` | – | `ErrorReset.Req` |

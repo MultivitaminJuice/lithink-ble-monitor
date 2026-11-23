@@ -198,8 +198,8 @@ function renderTruma(t){
       </div>
       <div class="lbl">Helligkeit <b id="brv">${t.brightness===null?'–':t.brightness}</b> %</div>
       ${slider('brightness','brv',t.brightness,10,100,5,0,dis)}
-      <div class="lbl">Helligkeit abgedunkelt <b id="dbrv">${t.dark_brightness===null?'–':t.dark_brightness}</b> %</div>
-      ${slider('dark_brightness','dbrv',t.dark_brightness,0,100,1,0,dis)}
+      <div class="lbl">Helligkeit abgedunkelt <b id="dbrv">${t.dark_brightness===null?'–':t.dark_brightness}</b> / 10</div>
+      ${slider('dark_brightness','dbrv',t.dark_brightness,1,10,1,0,dis)}
       <div class="lbl">Abdunkeln nach <b id="dtov">${t.display_timeout===null?'–':t.display_timeout}</b> s</div>
       ${slider('display_timeout','dtov',t.display_timeout,10,600,10,0,dis)}` : ''}
       <div class="small">Nach Stromausfall wiederherstellen: <a href="#" onclick="tr('restore',${t.restore_enabled?0:1});return false">${t.restore_enabled?'an':'aus'}</a></div>

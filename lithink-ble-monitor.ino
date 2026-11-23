@@ -207,7 +207,7 @@ static void handleTrumaControl() {
   // heater off too and the panel can only be switched on again on site.
   else if (what == "pwr_mode")    { valid = iv == 1 || iv == 3;  ok = valid && truma.write("PowerMgmt", "PwrMode", iv, DEV_PANEL); }  // 1 standby, 3 on
   else if (what == "brightness")  { valid = iv >= 10 && iv <= 100; ok = valid && truma.write("Panel", "Intst", iv, DEV_PANEL); }
-  else if (what == "dark_brightness") { valid = iv >= 0 && iv <= 100; ok = valid && truma.write("Panel", "DarkIntst", iv, DEV_PANEL); }
+  else if (what == "dark_brightness") { valid = iv >= 1 && iv <= 10; ok = valid && truma.write("Panel", "DarkIntst", iv, DEV_PANEL); }
   else if (what == "display_timeout") { valid = iv >= 10 && iv <= 600; ok = valid && truma.write("Panel", "DisplayTimeout", iv, DEV_PANEL); }
   else if (what == "restore")     { valid = iv >= 0 && iv <= 1;  ok = valid && truma.set_restore(iv != 0); }
   else if (what == "error_reset") ok = truma.write("ErrorReset", "Req", 1, 0);
