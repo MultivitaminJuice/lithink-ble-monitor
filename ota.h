@@ -57,26 +57,42 @@ inline void otaWebHandlers(WebServer &server, const char *password) {
   });
 
   // Receive + flash. Two callbacks: the responder runs after the upload.
+  // "OK" and the restart only follow an authorised upload that was written
+  // completely; anything else (wrong password, broken upload) gets no reboot.
+  static bool flashed = false;
+  // WebServer also calls the upload callback for non-form POSTs ("raw" mode);
+  // server.upload() is a null reference then. Keep Content-Type to tell them
+  // apart (note: a later collectHeaders() call elsewhere would replace this).
+  static const char *kHeaders[] = {"Content-Type"};
+  server.collectHeaders(kHeaders, 1);
   server.on("/update", HTTP_POST,
-    [&server]() {
-      bool ok = !Update.hasError();
-      server.send(200, "text/plain", ok ? "OK - rebooting" : "FAILED");
+    [&server, password]() {
+      if (!server.authenticate("admin", password)) return server.requestAuthentication();
+      const bool ok = flashed;
+      flashed = false;
+      server.send(ok ? 200 : 500, "text/plain", ok ? "OK - rebooting" : "FAILED");
       delay(400);
       if (ok) ESP.restart();
     },
     [&server, password]() {
+      if (!server.header("Content-Type").startsWith("multipart/form-data")) return;
       HTTPUpload &up = server.upload();
       if (up.status == UPLOAD_FILE_START) {
+        flashed = false;
         if (!server.authenticate("admin", password)) return;  // guard
         Serial.printf("[ota-web] receiving %s\n", up.filename.c_str());
-        Update.begin(UPDATE_SIZE_UNKNOWN);
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
       } else if (up.status == UPLOAD_FILE_WRITE) {
-        Update.write(up.buf, up.currentSize);
+        if (Update.isRunning()) Update.write(up.buf, up.currentSize);
       } else if (up.status == UPLOAD_FILE_END) {
-        if (Update.end(true))
+        if (!Update.isRunning()) return;
+        flashed = Update.end(true);
+        if (flashed)
           Serial.printf("[ota-web] done, %u bytes\n", up.totalSize);
         else
           Update.printError(Serial);
+      } else if (up.status == UPLOAD_FILE_ABORTED) {
+        if (Update.isRunning()) Update.abort();
       }
     });
 }
