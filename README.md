@@ -33,6 +33,7 @@ not the UI or the updater — can drop them:
 | Web UI + JSON API | `web_page.h` + handlers in the `.ino` | — | on |
 | Network updates (OTA) | [`ota.h`](ota.h) | `ENABLE_OTA` | on |
 | Charge/discharge control | in `jbd_bms.h` / web UI | `ENABLE_CONTROL` | off |
+| Truma iNet X heater panel | [`truma_ble.h`](truma_ble.h) + [`truma_core.*`](truma_core.h) | `ENABLE_TRUMA` | off |
 
 The reusable core — [`jbd_bms.h`](jbd_bms.h) — has none of these and depends only
 on NimBLE.
@@ -107,10 +108,10 @@ pio run -t upload --upload-port lithink-bridge.local --upload-flags --auth=<OTA_
 
 ## JSON API
 
-`GET /api/data` → one object per battery:
+`GET /api/data` → build flags and one object per battery:
 
 ```json
-{ "batteries": [ {
+{ "control":0, "truma":1, "batteries": [ {
   "name":"Akku Bank","connected":true,"valid":true,"age_s":3,
   "voltage":13.29,"current":0.00,"power":0,"soc":99,
   "remaining_ah":331.30,"nominal_ah":334.00,"cycles":1,
@@ -122,6 +123,118 @@ pio run -t upload --upload-port lithink-bridge.local --upload-flags --auth=<OTA_
 
 `POST /api/control?bat=<i>&what=charge|discharge&on=0|1` — only active when built
 with `ENABLE_CONTROL = 1`.
+
+`GET /api/status` → diagnostics: `uptime_s`, `reset_reason`, `free_heap`,
+`min_free_heap`, `max_alloc_heap` (largest free block), `wifi_rssi`,
+`wifi_drops` and the last WiFi outages (`wifi_outages`: time, reason, duration).
+
+With `ENABLE_TRUMA = 1` (see below):
+
+- `GET /api/truma` → panel status, heater values (`null` while unknown), the
+  devices on the panel bus, the timers and the display state
+- `POST /api/truma?what=<action>&value=<n>` with `what` one of
+
+  | action | value | bus parameter |
+  |---|---|---|
+  | `mode` | 0 off, 3 heat, 5 fan | `RoomClimate.Mode` |
+  | `target` | °C, 5–30 | set point of the running mode |
+  | `heat_mode` | 0 fast, 1 comfort | `AirHeating.Mode` |
+  | `fan` | 0–10 | `AirCirculation.FanLevel` |
+  | `water` | 0/1 | `WaterHeating.Active` |
+  | `water_mode` | 0 eco, 1 comfort, 2 hot | `WaterHeating.Mode` |
+  | `boost` | 0/1 | `WaterHeating.FasterHeatingMode` |
+  | `diesel` | 0/1 | `EnergySrc.DieselLevel` |
+  | `electric` | 0 off, 1 = 900 W, 2 = 1800 W | `EnergySrc.ElectricLevel` |
+  | `timer` | 0/1, plus `&n=1..6` | `TimerConfig.Timer<n>State` |
+  | `pwr_mode` | 1 standby, 3 on | `PowerMgmt.PwrMode` (panel) |
+  | `brightness` | 10–100 % | `Panel.Intst` |
+  | `dark_brightness` | 0–100 % | `Panel.DarkIntst` |
+  | `display_timeout` | 10–600 s | `Panel.DisplayTimeout` |
+  | `restore` | 0/1 | restore after a panel reset (stored on the ESP) |
+  | `error_reset` | – | `ErrorReset.Req` |
+  | `pair`, `unpair`, `reconnect` | – | – |
+
+- `GET /api/truma/log` → the last log lines of the Truma module (plain text)
+- `GET /api/truma/bus` → every value the session knows, one
+  `<device> <Topic>.<Param> = <value>` per line (diagnostics)
+
+---
+
+## Truma iNet X panel (optional, experimental)
+
+With `ENABLE_TRUMA = 1` the same ESP32 also connects to a **Truma iNet X**
+panel over BLE — the way the Truma app does — and adds a heater card to the
+web UI:
+
+- room / target temperature (slider), mode off / heat / fan, fan level,
+  heating mode fast / comfort
+- hot water off / eco / comfort / hot and boost (boost needs heating on and
+  switches heating off while it runs)
+- energy source diesel on/off and electric off / 900 W / 1800 W (the heater
+  keeps at least one source on by itself)
+- 230 V status, errors of heater and panel (readable; *reset* only for
+  resettable ones), timers on/off
+- devices on the panel bus with firmware and serial number
+- panel display: on / standby, brightness, dimmed brightness, dim timeout,
+  "last used"
+- values greyed out with their age while the panel is not connected
+- optional **restore after a panel reset**: the main switch resets the heater
+  to factory settings (off, 18 °C, electric 1800 W). The ESP remembers the
+  settings and writes them back when the panel returns in exactly that
+  factory state; settings changed at the panel meanwhile are kept.
+
+- Protocol core: [`truma_core.h`](truma_core.h) / [`truma_core.cpp`](truma_core.cpp),
+  vendored unchanged from
+  [Moormerlander/esphome-truma-inetx](https://github.com/Moormerlander/esphome-truma-inetx)
+  v0.7.6 (host tests in [`tests/`](tests/)).
+- BLE glue for NimBLE: [`truma_ble.h`](truma_ble.h), a port of that project's
+  ESPHome/Bluedroid glue. Runs in its own task; needs a third BLE connection
+  next to two batteries (the NimBLE default of 3 connections is exactly enough).
+
+**Pairing:** press *Koppeln* in the web UI, then choose *add device* on the
+panel within 120 s. The panel may show "something went wrong" afterwards —
+that refers to the app-level handshake and can be ignored.
+
+**Panel quirks to know:**
+
+- Only one app connection: while the ESP is connected, the Truma app can't be.
+- After a lost connection the panel can refuse new ones until it is
+  power-cycled. The firmware therefore never drops a working link on purpose;
+  session problems are fixed by restarting the session over the same link.
+- The panel rotates its BLE address; the bond is found again via its identity
+  key (IRK), with the panel name as a fallback.
+- `PowerMgmt.PwrMode` = 1 puts only the panel into standby (display dark, or
+  dimmed while the heater runs; heater, BLE link and writes keep working);
+  3 wakes it to the lock screen. 0 is a real shutdown — heater off, BLE gone,
+  only switchable on at the panel — so the firmware does not accept it.
+- `Panel.Screensaver` is a state (1 = display dimmed right now), not a
+  setting. `Panel.UserInactiveSince` only resets on real use; taps on the
+  lock screen don't count. The lock state itself is not on the bus.
+- A lost LIN line shows up as heater error `{"sev":1,"code":255,"resettable":0}`
+  (panel mode goes to off) and clears by itself when the line is back.
+- Some writes are silently ignored by the panel, e.g. overwriting a timer slot.
+  Timers deleted in the Truma app disappear on the panel but are still
+  reported on the bus.
+
+**Status:** verified on hardware with a Combi D 6 E GEN2 (heater firmware
+2.3.0, panel 3.5.38): pairing, reading and writing all values above, and
+reconnecting by itself after a panel power cycle, the main switch, ESP
+reboots and firmware updates. Overnight run next to two batteries without
+WiFi drops; the link was lost once after 7 h 39 min and came back within 33 s.
+After the very first flash following pairing the panel needed one power cycle.
+
+**Memory:** the BLE session takes most of the heap; the largest free block is
+about 20–30 KB while connected. Large responses are therefore sent without
+copies, and the bus dump is only built when enough memory is free. On a crash
+the ESP-IDF writes a core dump to the `coredump` partition; read it over USB
+with `esptool.py read_flash 0x3F0000 0x10000 core.bin` and open it with
+`xtensa-esp32-elf-gdb` and the matching `firmware.elf`.
+
+Host tests (needs OpenSSL for AES):
+
+```bash
+cd tests && g++ -std=c++17 -I.. test_core.cpp ../truma_core.cpp -lcrypto -o test_core && ./test_core
+```
 
 ---
 
@@ -176,6 +289,10 @@ length (`4 + len + 3`) is complete, then verify trailing `0x77`, CRC and
 - **Two simultaneous BLE connections on one ESP32 are near the RF limit.**
   Reliable operation needs the ESP close to both batteries and good WiFi
   (shared 2.4 GHz radio). If connections flap, consider **one ESP per battery**.
+  With `ENABLE_TRUMA` the panel adds a third connection, plus scanning while
+  the panel is not connected.
+- WiFi watchdog: after 1 min without WiFi the ESP reconnects, after 5 min it
+  restarts.
 - Data in the JSON is updated from a background task; a reader may briefly see a
   value mid-refresh. Fine for monitoring, not for safety interlocks.
 - Control over a 300 A BMS from a browser is powerful — keep `ENABLE_CONTROL`
@@ -183,4 +300,9 @@ length (`4 + len + 3`) is complete, then verify trailing `0x77`, CRC and
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) — except the optional Truma module
+(`truma_core.h`, `truma_core.cpp`, `truma_ble.h`, `tests/test_core.cpp`), which
+is **GPL-3.0** (see [LICENSE-GPL-3.0](LICENSE-GPL-3.0)) because it is derived
+from Moormerlander/esphome-truma-inetx. A firmware built with
+`ENABLE_TRUMA = 1` is therefore covered by the GPL-3.0 as a whole; with
+`ENABLE_TRUMA = 0` none of that code is compiled in.

@@ -35,3 +35,13 @@
 // module is dropped entirely.
 #define ENABLE_OTA   1
 #define OTA_PASSWORD "change-me-ota"
+
+// ---- Truma iNet X panel (optional module, see truma_ble.h) -----------------
+// 1 = also connect to a Truma iNet X panel over BLE and show/control the
+// heater in the web UI. Uses a third BLE connection next to the batteries.
+// Pair once from the web UI ("Pair"), then choose "add device" on the panel.
+// While the ESP is connected, the Truma app cannot connect to the panel.
+// This module is GPL-3.0 (port of Moormerlander/esphome-truma-inetx).
+#define ENABLE_TRUMA    0
+// Name shown in the panel's device list.
+#define TRUMA_USER_NAME "ESP32 Monitor"
