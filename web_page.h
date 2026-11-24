@@ -105,7 +105,7 @@ const T_WATER = ['Eco (40 °C)','Comfort (60 °C)','Hot (70 °C)'];
 // least one source on by itself (switching off the last one turns the other on).
 const T_ELECTRIC = ['Aus','900 W','1800 W'];
 // AirHeating.Active / WaterHeating.Active: 0 off, 1 heating now, 2 on but target reached
-const T_ACTIVE = ['aus','heizt','bereit'];
+const T_ACTIVE = ['aus','heizt','Soll erreicht'];
 const T_DEV = {257:'Panel',513:'Heizung',1537:'Bluetooth-Modul',1029:'Stromverteilung'};
 const T_SYMBOL = ['Automatik','Heizen','Heizen (Klima)','Kühlen','Lüften','Entfeuchten','Warmwasser'];
 const T_DAYS = ['Mo','Di','Mi','Do','Fr','Sa','So'];
