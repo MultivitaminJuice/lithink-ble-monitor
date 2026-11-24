@@ -154,7 +154,7 @@ struct State {
   bool connected = false;           // session running, values are live
   uint16_t pairing_left_s = 0;
   char panel_name[32] = "";
-  char last_disconnect[96] = "";
+  char last_disconnect[128] = "";
   char link_params[64] = "";
   char error[128] = "";             // heater ErrorReset.ErrCode as text ("[]" = none)
   char panel_error[128] = "";       // panel ErrorReset.ErrCode as text
@@ -181,6 +181,8 @@ struct State {
   int32_t values_age_s = -1;        // since the session last ran (0 = live, -1 = never)
   bool restore_enabled = true;      // restore settings after a panel reset
   int32_t restored_age_s = -1;      // since the last restore, -1 = none
+  bool frost_enabled = true;        // frost guard: heat to 5 °C when the room is colder
+  int32_t frost_age_s = -1;         // since the frost guard last wrote, -1 = never
   uint8_t device_count = 0;
   DeviceInfo devices[MAX_DEVICES];
   TimerInfo timers[MAX_TIMERS];
@@ -213,6 +215,7 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
       if (bonds_.empty()) logf(1, "No bond stored for the panel: it will not be found again after a link loss");
       conn_params_at_ = millis() | 1;  // after the session loop, not inside the callback
       restore_check_at_ = (millis() + RESTORE_SETTLE_MS) | 1;  // let the values arrive first
+      frost_check_at_ = (millis() + FROST_FIRST_MS) | 1;
     };
     session_.on_failed = [this](const char *reason) { soft_restart_(reason); };
     transport_.on_fatal = [this](const char *reason) { soft_restart_(reason); };
@@ -232,6 +235,15 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
       return false;
     }
     client_->setClientCallbacks(this, false);
+    // onDisconnect() does not get the HCI reason in NimBLE-Arduino 1.4.x; a
+    // GAP listener sees the event first, while the client still has its handle.
+    ble_gap_event_listener_register(&gap_listener_, [](ble_gap_event *e, void *arg) -> int {
+      auto *self = static_cast<Panel *>(arg);
+      if (e->type == BLE_GAP_EVENT_DISCONNECT && self->client_ != nullptr &&
+          e->disconnect.conn.conn_handle == self->client_->getConnId())
+        self->disc_reason_ = e->disconnect.reason;
+      return 0;
+    }, this);
     client_->setConnectTimeout(10);  // seconds in NimBLE-Arduino 1.4.x
     // 8.75-11.25 ms like ESPHome: the panel rejects longer intervals.
     client_->setConnectionParams(7, 9, 0, 400);
@@ -258,7 +270,8 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
   bool pair() { return post_(Command::PAIR); }
   bool unpair() { return post_(Command::UNPAIR); }
   bool reconnect() { return post_(Command::RECONNECT); }
-  bool set_restore(bool on) { return post_(Command::RESTORE, "", "", on ? 1 : 0, 0); }  // Write an integer parameter; dest 0 = whichever bus device publishes it.
+  bool set_restore(bool on) { return post_(Command::RESTORE, "", "", on ? 1 : 0, 0); }
+  bool set_frost(bool on) { return post_(Command::FROST, "", "", on ? 1 : 0, 0); }  // Write an integer parameter; dest 0 = whichever bus device publishes it.
   bool write(const char *topic, const char *param, int32_t value, uint16_t dest) {
     return post_(Command::WRITE, topic, param, value, dest);
   }
@@ -328,7 +341,7 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
   enum class Link : uint8_t { NO_BLE, WAIT_ADV, CONNECTING, ENCRYPTING, SUBSCRIBING, SESSION };
 
   struct Command {
-    enum Kind : uint8_t { PAIR, UNPAIR, RECONNECT, WRITE, TARGET, DUMP, RESTORE } kind;
+    enum Kind : uint8_t { PAIR, UNPAIR, RECONNECT, WRITE, TARGET, DUMP, RESTORE, FROST } kind;
     char topic[24];
     char param[24];
     int32_t value;
@@ -429,6 +442,7 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
     }
     panel_name_ = prefs.getString("panel", "").c_str();
     restore_enabled_ = prefs.getBool("restore", true);
+    frost_enabled_ = prefs.getBool("frost", true);
     Settings saved{};
     if (prefs.getBytes("settings", &saved, sizeof(saved)) == sizeof(saved) && saved.magic == SETTINGS_MAGIC)
       remembered_ = saved;
@@ -551,6 +565,10 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
       last_capture_ = now;
       capture_settings_();
     }
+    if (frost_check_at_ != 0 && (int32_t)(now - frost_check_at_) >= 0) {
+      frost_check_at_ = (now + FROST_EVERY_MS) | 1;
+      if (session_.running()) frost_check_();
+    }
     publish_state_(false);
   }
 
@@ -601,6 +619,20 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
 
   void restore_check_() {
     const Settings cur = read_settings_();
+    const bool unannounced = unannounced_off_;
+    unannounced_off_ = false;
+    if (restore_enabled_ && unannounced && remembered_.magic == SETTINGS_MAGIC && cur.mode == 0 && mode_before_loss_ > 0) {
+      Settings was = remembered_;
+      was.mode = 0;  // the last capture may or may not have seen the mode go off
+      if (same_settings_(cur, was)) {
+        logf(2, "Heating went off during the link loss without being switched off: restoring mode %d",
+             mode_before_loss_);
+        session_.write("RoomClimate", "Mode", proto::CborValue::make_int(mode_before_loss_), proto::DEV_PANEL);
+        restored_at_ = millis() | 1;
+        last_capture_ = millis() + 10000;  // next capture in 20 s: let the panel echo first
+        return;
+      }
+    }
     const bool factory = cur.mode == 0 && cur.target == 180;
     if (!restore_enabled_ || remembered_.magic != SETTINGS_MAGIC || !factory || same_settings_(cur, remembered_)) {
       capture_settings_();  // nothing to restore: the panel's settings are the ones to remember
@@ -631,6 +663,42 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
     last_capture_ = millis() + 10000;  // next capture in 20 s: let the heater echo first
   }
 
+  // Frost guard: below 5 °C the heating must run, whoever switched it off.
+  // Electric 900 W when 230 V is there, else diesel; an electric-only setting
+  // without 230 V is switched to diesel too. Never switches back to electric.
+  void frost_check_() {
+    if (!frost_enabled_) return;
+    const proto::CborValue *room = num_("AirHeating", "Temp", proto::DEV_HEATER);
+    const int mode = current_mode_();
+    if (room == nullptr || mode < 0 || room->as_int() >= FROST_TEMP) return;
+    const proto::CborValue *pl = num_("LinePower", "Plugged", proto::DEV_HEATER);
+    const proto::CborValue *el = num_("EnergySrc", "ElectricLevel", proto::DEV_HEATER);
+    const proto::CborValue *di = num_("EnergySrc", "DieselLevel", proto::DEV_HEATER);
+    const bool plugged = pl != nullptr && pl->as_int() == 1;
+    const bool electric_only = el != nullptr && el->as_int() > 0 && (di == nullptr || di->as_int() == 0);
+    auto w = [this](const char *t, const char *p, int v, uint16_t dest) {
+      session_.write(t, p, proto::CborValue::make_int(v), dest);
+    };
+    // The heater keeps at least one source on: switch the wanted one on first.
+    auto use_diesel = [&]() { w("EnergySrc", "DieselLevel", 1, proto::DEV_HEATER); w("EnergySrc", "ElectricLevel", 0, proto::DEV_HEATER); };
+    auto use_electric = [&]() { w("EnergySrc", "ElectricLevel", 1, proto::DEV_HEATER); w("EnergySrc", "DieselLevel", 0, proto::DEV_HEATER); };
+    if (mode == 0) {
+      logf(2, "%s frost guard: room %.1f °C, heating off -> heating to %.0f °C on %s", clock_[0] ? clock_ : "?",
+           room->as_double() / 10.0, FROST_TEMP / 10.0, plugged ? "electric 900 W" : "diesel (no 230 V)");
+      if (plugged) use_electric(); else use_diesel();
+      w("AirHeating", "TgtTemp", FROST_TEMP, proto::DEV_HEATER);
+      w("RoomClimate", "Mode", 3, proto::DEV_PANEL);
+    } else if ((mode == 3 || mode == 4) && electric_only && !plugged) {
+      logf(2, "%s frost guard: room %.1f °C, electric only without 230 V -> diesel", clock_[0] ? clock_ : "?",
+           room->as_double() / 10.0);
+      use_diesel();
+    } else {
+      return;
+    }
+    frost_at_ = millis() | 1;
+    last_capture_ = millis() + 10000;  // let the heater echo before remembering
+  }
+
   void flush_writes_() {
     while (write_done_) {
       write_done_ = false;
@@ -659,6 +727,16 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
           prefs.putBool("restore", restore_enabled_);
           prefs.end();
           logf(2, "Restore after panel reset %s", restore_enabled_ ? "on" : "off");
+          break;
+        }
+        case Command::FROST: {
+          frost_enabled_ = c.value != 0;
+          Preferences prefs;
+          prefs.begin("truma", false);
+          prefs.putBool("frost", frost_enabled_);
+          prefs.end();
+          logf(2, "Frost guard %s", frost_enabled_ ? "on" : "off");
+          if (frost_enabled_) frost_check_at_ = (millis() + 1000) | 1;
           break;
         }
       }
@@ -1083,11 +1161,55 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
   }
 
   void record_disconnect_() {
-    // NimBLE-Arduino 1.4.x does not pass the HCI reason to onDisconnect().
+    // Heating that goes off while the link is down was not switched off here,
+    // unless the panel was shutting down or the mode went off just before.
+    const bool off_just_before = logged_mode_ == 0 && last_off_at_ != 0 && millis() - last_off_at_ < 30000;
+    mode_before_loss_ = logged_mode_ > 0 ? logged_mode_ : (off_just_before ? last_on_mode_ : 0);
+    unannounced_off_ = mode_before_loss_ > 0 && (logged_pwr_ == 1 || logged_pwr_ == 3);
     const uint32_t mins = (millis() - session_since_) / 60000;
-    snprintf(last_disconnect_, sizeof(last_disconnect_), "uptime %lus: link lost after %u h %02u min, %u session restarts",
-             (unsigned long)(millis() / 1000), (unsigned)(mins / 60), (unsigned)(mins % 60), (unsigned)soft_restarts_);
+    const int r = disc_reason_;
+    disc_reason_ = 0;
+    char why[40];
+    if (r > BLE_HS_ERR_HCI_BASE && r < BLE_HS_ERR_HCI_BASE + 0x100) {
+      const int hci = r - BLE_HS_ERR_HCI_BASE;
+      const char *text = hci == 0x08 ? " supervision timeout" : hci == 0x13 ? " closed by the panel"
+                       : hci == 0x16 ? " closed by the ESP" : hci == 0x22 ? " LL response timeout"
+                       : hci == 0x3D ? " MIC failure" : hci == 0x3E ? " not established" : "";
+      snprintf(why, sizeof(why), "HCI 0x%02X%s", hci, text);
+    } else {
+      snprintf(why, sizeof(why), "rc %d", r);
+    }
+    snprintf(last_disconnect_, sizeof(last_disconnect_),
+             "uptime %lus, panel clock %s: link lost after %u h %02u min (%s), %u session restarts",
+             (unsigned long)(millis() / 1000), clock_[0] ? clock_ : "?", (unsigned)(mins / 60), (unsigned)(mins % 60),
+             why, (unsigned)soft_restarts_);
     logf(1, "%s", last_disconnect_);
+  }
+
+  // Log changes of the values that matter for "why is the heating off?",
+  // with the panel clock (the ESP has no clock of its own). The last values
+  // survive a link loss, so a change across a reconnect is logged too.
+  void log_changes_(const State &s) {
+    if (const proto::CborValue *t = session_.bus.get("TimeAndDate", "Time", proto::DEV_PANEL))
+      if (t->type == proto::CborValue::TEXT) snprintf(clock_, sizeof(clock_), "%s", t->s.c_str());
+    const char *at = clock_[0] ? clock_ : "?";
+    if (s.mode >= 0 && s.mode != logged_mode_) {
+      if (logged_mode_ >= 0) logf(2, "%s mode %d -> %d", at, logged_mode_, s.mode);
+      if (logged_mode_ > 0 && s.mode == 0) { last_on_mode_ = logged_mode_; last_off_at_ = millis() | 1; }
+      logged_mode_ = s.mode;
+    }
+    if (s.pwr_mode >= 0 && s.pwr_mode != logged_pwr_) {
+      if (logged_pwr_ >= 0) logf(2, "%s panel PwrMode %d -> %d", at, logged_pwr_, s.pwr_mode);
+      logged_pwr_ = s.pwr_mode;
+    }
+    if (s.error[0] && strcmp(s.error, logged_error_) != 0) {
+      if (logged_error_[0]) logf(2, "%s heater errors: %.90s", at, s.error);
+      snprintf(logged_error_, sizeof(logged_error_), "%s", s.error);
+    }
+    if (s.panel_error[0] && strcmp(s.panel_error, logged_panel_error_) != 0) {
+      if (logged_panel_error_[0]) logf(2, "%s panel errors: %.90s", at, s.panel_error);
+      snprintf(logged_panel_error_, sizeof(logged_panel_error_), "%s", s.panel_error);
+    }
   }
 
   // ---- values ------------------------------------------------------------------------------
@@ -1183,6 +1305,8 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
     s.values_age_s = s.connected ? 0 : (last_live_ ? (int32_t)((now - last_live_) / 1000) : -1);
     s.restore_enabled = restore_enabled_;
     s.restored_age_s = restored_at_ ? (int32_t)((now - restored_at_) / 1000) : -1;
+    s.frost_enabled = frost_enabled_;
+    s.frost_age_s = frost_at_ ? (int32_t)((now - frost_at_) / 1000) : -1;
     if (pairing_ && (int32_t)(pairing_until_ - now) > 0) s.pairing_left_s = (pairing_until_ - now) / 1000;
     strncpy(s.panel_name, panel_name_.c_str(), sizeof(s.panel_name) - 1);
     strncpy(s.last_disconnect, last_disconnect_, sizeof(s.last_disconnect) - 1);
@@ -1238,6 +1362,7 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
     if (auto *v = num_("Panel", "UserInactiveSince", proto::DEV_PANEL)) s.panel_idle_s = (int32_t)v->as_int();
     fill_devices_(s, now);
     fill_timers_(s);
+    if (s.connected) log_changes_(s);
 
     if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
       snapshot_ = s;
@@ -1266,6 +1391,16 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
   uint32_t restore_check_at_ = 0;
   uint32_t last_capture_ = 0;
   uint32_t restored_at_ = 0;
+  static const int FROST_TEMP = 50;                     // 0.1 °C
+  static const uint32_t FROST_FIRST_MS = 60000;         // first check after connecting
+  static const uint32_t FROST_EVERY_MS = 15 * 60000;
+  bool frost_enabled_ = true;
+  uint32_t frost_check_at_ = 0;
+  uint32_t frost_at_ = 0;
+  bool unannounced_off_ = false;    // the last link loss came without a switch-off
+  int mode_before_loss_ = 0;
+  int last_on_mode_ = 0;            // mode before the last live switch-off
+  uint32_t last_off_at_ = 0;
   uint32_t last_live_ = 0;  // millis() when the session last ran
   std::string bus_dump_;             // guarded by state_mutex_
   volatile uint32_t dump_seq_ = 0;
@@ -1305,8 +1440,15 @@ class Panel : public proto::TransportIO, public NimBLEClientCallbacks {
   uint32_t session_since_ = 0;
   uint32_t conn_params_at_ = 0;
   uint32_t read_params_at_ = 0;
-  char last_disconnect_[96] = "";
+  char last_disconnect_[128] = "";
   char link_params_[64] = "";
+  ble_gap_event_listener gap_listener_{};
+  volatile int disc_reason_ = 0;    // NimBLE reason of the last panel disconnect (0x200 + HCI code)
+  char clock_[6] = "";              // panel clock "HH:MM" as last reported
+  int logged_mode_ = -1;            // last values written to the log
+  int logged_pwr_ = -1;
+  char logged_error_[128] = "";
+  char logged_panel_error_[128] = "";
 
   uint32_t last_update_ms_ = 0;
   uint32_t last_publish_ = 0;

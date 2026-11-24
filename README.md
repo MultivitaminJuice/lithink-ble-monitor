@@ -150,7 +150,8 @@ With `ENABLE_TRUMA = 1` (see below):
   | `brightness` | 10–100 % | `Panel.Intst` |
   | `dark_brightness` | 1–10 (the panel ignores other values) | `Panel.DarkIntst` |
   | `display_timeout` | 10–600 s | `Panel.DisplayTimeout` |
-  | `restore` | 0/1 | restore after a panel reset (stored on the ESP) |
+  | `restore` | 0/1 | restore after a panel reset or an unannounced switch-off (stored on the ESP) |
+  | `frost` | 0/1 | frost guard (stored on the ESP, default on) |
   | `error_reset` | – | `ErrorReset.Req` |
   | `pair`, `unpair`, `reconnect` | – | – |
 
@@ -182,6 +183,17 @@ web UI:
   to factory settings (off, 18 °C, electric 1800 W). The ESP remembers the
   settings and writes them back when the panel returns in exactly that
   factory state; settings changed at the panel meanwhile are kept.
+  It also restores the mode when the heating went off during a link loss
+  while every other setting stayed the same, unless the ESP saw it being
+  switched off or the panel shutting down before the link went.
+- **frost guard** (default on): every 15 min (first check 1 min after
+  connecting) – if the room is below 5 °C and the heating is off, the ESP
+  switches it on at 5 °C, electric 900 W with 230 V, else diesel. Heating on
+  electric only without 230 V is switched to diesel. It never switches back
+  to electric and acts whoever switched the heating off. Works only while
+  the ESP is connected to the panel.
+- the Truma log records mode, panel power state and error changes with the
+  panel clock, and the HCI reason of a link loss
 
 - Protocol core: [`truma_core.h`](truma_core.h) / [`truma_core.cpp`](truma_core.cpp),
   vendored unchanged from

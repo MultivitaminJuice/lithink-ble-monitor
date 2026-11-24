@@ -138,7 +138,8 @@ function renderTruma(t){
   return `<div class="card wide">
     <h2>Truma Heizung</h2>
     <div class="sub"><span class="dot ${on?'ok':'bad'}"></span>${st}${t.panel_name?' · '+t.panel_name:''}${!on&&t.values_age_s>0?' · Stand vor '+ago(t.values_age_s):''}</div>
-    ${t.restored_age_s>=0&&t.restored_age_s<43200?`<div class="small" style="margin:-6px 0 10px">Einstellungen nach Stromausfall wiederhergestellt vor ${ago(t.restored_age_s)}</div>`:''}
+    ${t.restored_age_s>=0&&t.restored_age_s<43200?`<div class="small" style="margin:-6px 0 10px">Einstellungen automatisch wiederhergestellt vor ${ago(t.restored_age_s)}</div>`:''}
+    ${t.frost_age_s>=0&&t.frost_age_s<43200?`<div class="small" style="margin:-6px 0 10px">Frostschutz hat eingegriffen vor ${ago(t.frost_age_s)}</div>`:''}
     <div class="${on?'':'stale'}">
     <div class="grid">
       <div><div class="k">Raum</div><div class="big">${f(t.room_temp,1)} °C</div></div>
@@ -202,7 +203,8 @@ function renderTruma(t){
       ${slider('dark_brightness','dbrv',t.dark_brightness,1,10,1,0,dis)}
       <div class="lbl">Abdunkeln nach <b id="dtov">${t.display_timeout===null?'–':t.display_timeout}</b> s</div>
       ${slider('display_timeout','dtov',t.display_timeout,10,600,10,0,dis)}` : ''}
-      <div class="small">Nach Stromausfall wiederherstellen: <a href="#" onclick="tr('restore',${t.restore_enabled?0:1});return false">${t.restore_enabled?'an':'aus'}</a></div>
+      <div class="small">Nach Stromausfall oder unerwartetem Ausschalten wiederherstellen: <a href="#" onclick="tr('restore',${t.restore_enabled?0:1});return false">${t.restore_enabled?'an':'aus'}</a></div>
+      <div class="small">Frostschutz (unter 5 °C heizen): <a href="#" onclick="tr('frost',${t.frost_enabled?0:1});return false">${t.frost_enabled?'an':'aus'}</a></div>
       <div class="small"><a href="#" onclick="trPair();return false">Koppeln</a>${t.paired?` · <a href="#" onclick="trAction('unpair','Kopplung wirklich entfernen?');return false">Entkoppeln</a> · <a href="#" onclick="trAction('reconnect');return false">Neu verbinden</a>`:''}</div>
     </details>
     <div class="small">${t.link_params?'Funk: '+t.link_params+'<br>':''}${t.last_disconnect?'Letzte Trennung: '+t.last_disconnect+'<br>':''}<a href="/api/truma/log" target="_blank">Log</a> · <a href="/api/truma/bus" target="_blank">Bus-Werte</a></div>

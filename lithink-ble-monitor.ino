@@ -142,6 +142,8 @@ static String buildTrumaJson() {
   s += ",\"values_age_s\":" + String(t.values_age_s);
   s += ",\"restore_enabled\":" + String(t.restore_enabled ? "true" : "false");
   s += ",\"restored_age_s\":" + String(t.restored_age_s);
+  s += ",\"frost_enabled\":" + String(t.frost_enabled ? "true" : "false");
+  s += ",\"frost_age_s\":" + String(t.frost_age_s);
   s += ",\"devices\":[";
   for (int i = 0; i < t.device_count; i++) {
     const truma_ble::DeviceInfo &d = t.devices[i];
@@ -210,6 +212,7 @@ static void handleTrumaControl() {
   else if (what == "dark_brightness") { valid = iv >= 1 && iv <= 10; ok = valid && truma.write("Panel", "DarkIntst", iv, DEV_PANEL); }
   else if (what == "display_timeout") { valid = iv >= 10 && iv <= 600; ok = valid && truma.write("Panel", "DisplayTimeout", iv, DEV_PANEL); }
   else if (what == "restore")     { valid = iv >= 0 && iv <= 1;  ok = valid && truma.set_restore(iv != 0); }
+  else if (what == "frost")       { valid = iv >= 0 && iv <= 1;  ok = valid && truma.set_frost(iv != 0); }
   else if (what == "error_reset") ok = truma.write("ErrorReset", "Req", 1, 0);
   else valid = false;
   if (!valid) { server.send(400, "text/plain", "bad request"); return; }
